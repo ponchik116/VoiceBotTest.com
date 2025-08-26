@@ -1,36 +1,160 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Roblox Universe Viewer (User Auth)</title>
-    <link rel="stylesheet" href="styles.css">
+  <meta charset="utf-8" />
+  <title>Говоришь — озвучивает каждое слово</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:28px}
+    button{font-size:15px;padding:8px 12px;margin:6px}
+    #status{margin-top:12px;color:#333'}
+    #log{margin-top:12px;padding:10px;border:1px solid #ddd;min-height:60px;white-space:pre-wrap}
+  </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Roblox Universe Viewer</h1>
-        <p class="warning">⚠️ You must be logged into Roblox in this browser for this to work!</p>
-        
-        <div class="input-section">
-            <h3>Step 1: Get Universe ID from Place ID</h3>
-            <input type="text" id="placeIdInput" placeholder="Enter Place ID (e.g. 6403373529)">
-            <button id="getUniverseBtn">Get Universe ID</button>
-            <div id="universeResult"></div>
-        </div>
-        
-        <div class="input-section">
-            <h3>Step 2: Get All Places in Universe</h3>
-            <input type="text" id="universeIdInput" placeholder="Enter Universe ID">
-            <button id="getPlacesBtn">Get Places</button>
-            <div id="placesResult"></div>
-        </div>
-        
-        <div id="loading" class="loading">Loading...</div>
-        <div id="error" class="error"></div>
-        
-        <div id="placesContainer" class="results"></div>
-    </div>
+  <h2>Каждое слово воспроизводится отдельно (стоп-слово: "чеснок")</h2>
 
-    <script src="script.js"></script>
+  <div>
+    <button id="startBtn">Начать</button>
+    <button id="stopBtn" disabled>Остановить</button>
+    <label style="margin-left:12px">
+      Голос TTS:
+      <select id="voiceSelect"></select>
+    </label>
+  </div>
+
+  <div id="status">Статус: ожидаю</div>
+  <div id="log" aria-live="polite"></div>
+
+<script>
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+const status = document.getElementById('status');
+const log = document.getElementById('log');
+const voiceSelect = document.getElementById('voiceSelect');
+
+let recognition;
+let recognizing = false;
+let stopRequested = false;
+const STOP_WORD = 'чеснок';
+
+// Инициализация SpeechRecognition
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SpeechRecognition) {
+  status.textContent = 'SpeechRecognition не поддерживается в этом браузере.';
+  startBtn.disabled = true;
+} else {
+  recognition = new SpeechRecognition();
+  recognition.lang = 'ru-RU';
+  recognition.interimResults = false; // хотим только финальные результаты
+  recognition.continuous = false; // краткие фразы — остановка по финалу; мы вручную рестартим
+}
+
+// Загрузка голосов
+function populateVoices() {
+  const voices = speechSynthesis.getVoices();
+  voiceSelect.innerHTML = '';
+  voices.forEach(v => {
+    const opt = document.createElement('option');
+    opt.value = v.name;
+    opt.textContent = `${v.name} (${v.lang})${v.default ? ' — default' : ''}`;
+    voiceSelect.appendChild(opt);
+  });
+}
+populateVoices();
+if (speechSynthesis.onvoiceschanged !== undefined) {
+  speechSynthesis.onvoiceschanged = populateVoices;
+}
+
+function logMsg(s) {
+  log.textContent = `${new Date().toLocaleTimeString()} — ${s}\n` + log.textContent;
+}
+
+// Воспроизведение текста
+function speakText(text, cb) {
+  if (!text) { if (cb) cb(); return; }
+  const utter = new SpeechSynthesisUtterance(text);
+  const chosen = voiceSelect.value;
+  const voices = speechSynthesis.getVoices();
+  if (chosen) {
+    const v = voices.find(x => x.name === chosen);
+    if (v) utter.voice = v;
+  }
+  utter.rate = 1;
+  utter.pitch = 1;
+  utter.onend = () => { if (cb) cb(); };
+  utter.onerror = () => { if (cb) cb(); };
+  speechSynthesis.cancel();
+  speechSynthesis.speak(utter);
+}
+
+// Обработчики распознавания
+if (recognition) {
+  recognition.onstart = () => {
+    recognizing = true;
+    status.textContent = 'Слушаю...';
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+  };
+
+  recognition.onerror = (e) => {
+    console.warn('recognition error', e);
+    // попытаемся перезапустить, если не запрошен стоп
+    if (!stopRequested) {
+      setTimeout(() => { try { recognition.start(); } catch(_){} }, 200);
+    }
+  };
+
+  recognition.onend = () => {
+    recognizing = false;
+    if (stopRequested) {
+      status.textContent = 'Остановлено';
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      return;
+    }
+    // автоматически рестартим, чтобы слушать следующее слово
+    try {
+      recognition.start();
+    } catch (e) { /* ignore */ }
+  };
+
+  recognition.onresult = (evt) => {
+    const res = evt.results[0][0].transcript.trim();
+    if (!res) return;
+    logMsg('Распознано: ' + res);
+    // Проверка стоп-слова (регистронезависимо, учитываем только слово)
+    if (res.toLowerCase().split(/\s+/).includes(STOP_WORD)) {
+      logMsg('Стоп-слово обнаружено — остановка');
+      stopRequested = true;
+      try { recognition.stop(); } catch(_) {}
+      speechSynthesis.cancel();
+      status.textContent = 'Остановлено (услышано стоп-слово)';
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      return;
+    }
+    // Воспроизводим распознанный текст, затем сразу рестартим (в onend распознавания мы уже рестартим)
+    // Чтобы минимизировать прерывания, запускаем speak и не ждём окончания для рестарта — recognition.onend сделает рестарт.
+    speakText(res);
+  };
+}
+
+// Кнопки
+startBtn.addEventListener('click', () => {
+  if (!recognition) return;
+  stopRequested = false;
+  log.textContent = '';
+  try { recognition.start(); } catch(e) {}
+});
+
+stopBtn.addEventListener('click', () => {
+  stopRequested = true;
+  try { recognition.stop(); } catch(e) {}
+  speechSynthesis.cancel();
+  status.textContent = 'Остановлено вручную';
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+});
+</script>
 </body>
 </html>
